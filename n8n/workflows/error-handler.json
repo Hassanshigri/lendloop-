@@ -1,0 +1,46 @@
+{
+  "id": "LLerrorHandler01",
+  "name": "LendLoop - Error handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Any failed LendLoop run lands here, so failures are never silent.\n// Replace the log with an email or Slack alert to the on-call person.\nconst e = $input.first().json;\nconst summary = {\n  workflow: e.workflow?.name,\n  executionId: e.execution?.id,\n  url: e.execution?.url,\n  failedNode: e.execution?.lastNodeExecuted,\n  error: e.execution?.error?.message,\n  at: new Date().toISOString(),\n};\nconsole.error('[LendLoop automation failure]', JSON.stringify(summary));\nreturn [{ json: summary }];\n"
+      },
+      "name": "Log failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Log failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {}
+}

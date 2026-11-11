@@ -1,0 +1,281 @@
+{
+  "id": "LLrequestNotify1",
+  "name": "LendLoop - Request notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop-request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook from Convex",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "lendloop-request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.LENDLOOP_SHARED_SECRET;\nif (!secret || secret.length < 32) throw new Error('LENDLOOP_SHARED_SECRET is missing or too short');\nfunction sign(method, path, body) {\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = crypto.createHmac('sha256', secret)\n    .update(`${timestamp}.${method}.${path}.${body}`).digest('hex');\n  return { timestamp, signature };\n}\n\n// Convex signs `${timestamp}.POST./webhook/lendloop-request.${rawBody}`.\n// n8n gives us the parsed body; Convex sends compact JSON.stringify output,\n// so re-serializing reproduces the exact bytes that were signed.\nconst item = $input.first().json;\nconst headers = item.headers || {};\nconst body = JSON.stringify(item.body);\nconst ts = headers['x-lendloop-timestamp'];\nconst sig = String(headers['x-lendloop-signature'] || '');\nlet valid = false;\nif (ts && Math.abs(Date.now() / 1000 - Number(ts)) <= 300) {\n  const expected = crypto.createHmac('sha256', secret)\n    .update(`${ts}.POST./webhook/lendloop-request.${body}`).digest('hex');\n  valid = expected.length === sig.length &&\n    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));\n}\n\n// Drop duplicate deliveries of the same event (Convex retries on timeouts).\nlet duplicate = false;\nif (valid) {\n  const store = $getWorkflowStaticData('global');\n  store.seen = store.seen || [];\n  duplicate = store.seen.includes(item.body.eventId);\n  if (!duplicate) store.seen = [...store.seen.slice(-499), item.body.eventId];\n}\nreturn [{ json: { valid, duplicate, event: valid ? item.body : null } }];\n"
+      },
+      "name": "Verify HMAC signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.valid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "name": "Reject (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "name": "Acknowledge (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Verify HMAC signature').first().json.duplicate }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "name": "New event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Data minimization: build the message from the few fields we received.\nconst e = $input.first().json.event;\nconst lines = {\n  'loan.requested': `${e.counterpartyFirstName} asked to borrow your ${e.toolName} (${e.startDate} to ${e.endDate}).`,\n  'loan.approved':  `${e.counterpartyFirstName} approved your request for the ${e.toolName} (${e.startDate} to ${e.endDate}).`,\n  'loan.declined':  `Your request for the ${e.toolName} was declined.`,\n  'loan.cancelled': `The request for your ${e.toolName} was cancelled.`,\n  'loan.returned':  `The ${e.toolName} was marked returned. Thanks for borrowing responsibly!`,\n};\nreturn [{ json: {\n  eventId: e.eventId,\n  loanId: e.loanId,\n  to: e.recipient.email,\n  subject: 'LendLoop update',\n  text: `Hi ${e.recipient.firstName}, ${lines[e.event] || 'your loan was updated.'}`,\n} }];\n"
+      },
+      "name": "Build minimal message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Mock notification channel. Swap this node for Send Email / Slack / Discord.\n// Only the first name and message are logged; the email address is masked.\nconst m = $input.first().json;\nconst masked = m.to ? m.to.replace(/^(.).*(@.*)$/, '$1***$2') : 'no email';\nconsole.log(`[LendLoop notify] to=${masked} :: ${m.text}`);\nreturn [{ json: { ...m, delivered: true } }];\n"
+      },
+      "name": "Send notification (mock)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.LENDLOOP_SHARED_SECRET;\nif (!secret || secret.length < 32) throw new Error('LENDLOOP_SHARED_SECRET is missing or too short');\nfunction sign(method, path, body) {\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = crypto.createHmac('sha256', secret)\n    .update(`${timestamp}.${method}.${path}.${body}`).digest('hex');\n  return { timestamp, signature };\n}\n\nconst m = $input.first().json;\nconst path = '/n8n/automation-events';\nconst body = JSON.stringify({\n  idempotencyKey: `notify:${m.eventId}`,\n  loanId: m.loanId,\n  kind: 'request_notification',\n  status: m.delivered ? 'sent' : 'failed',\n});\nreturn [{ json: { body, ...sign('POST', path, body) } }];\n"
+      },
+      "name": "Sign write-back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONVEX_SITE_URL }}/n8n/automation-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}"
+      },
+      "name": "Record status in Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        -100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Webhook from Convex": {
+      "main": [
+        [
+          {
+            "node": "Verify HMAC signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify HMAC signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge (200)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (401)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acknowledge (200)": {
+      "main": [
+        [
+          {
+            "node": "New event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New event?": {
+      "main": [
+        [
+          {
+            "node": "Build minimal message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build minimal message": {
+      "main": [
+        [
+          {
+            "node": "Send notification (mock)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send notification (mock)": {
+      "main": [
+        [
+          {
+            "node": "Sign write-back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign write-back": {
+      "main": [
+        [
+          {
+            "node": "Record status in Convex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "LLerrorHandler01",
+    "saveDataErrorExecution": "all"
+  },
+  "active": false,
+  "pinData": {}
+}

@@ -1,0 +1,44 @@
+# Local n8n for LendLoop.
+#   1. cp .env.example .env and fill in LENDLOOP_SHARED_SECRET and CONVEX_SITE_URL
+#   2. docker compose up
+# The one-off "n8n-import" service loads the workflows in n8n/workflows on first start.
+
+x-n8n-env: &n8n-env
+  GENERIC_TIMEZONE: UTC
+  TZ: UTC
+  # Code nodes need the built-in crypto module for HMAC signing.
+  NODE_FUNCTION_ALLOW_BUILTIN: crypto
+  # Workflows read the two values below with $env. They live only in .env,
+  # never in the workflow JSON, so exported workflows contain no secrets.
+  N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+  LENDLOOP_SHARED_SECRET: ${LENDLOOP_SHARED_SECRET:?set LENDLOOP_SHARED_SECRET in .env}
+  CONVEX_SITE_URL: ${CONVEX_SITE_URL:?set CONVEX_SITE_URL in .env}
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+  N8N_DIAGNOSTICS_ENABLED: "false"
+
+services:
+  n8n-import:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    environment: *n8n-env
+    entrypoint: ["/bin/sh", "-c", "n8n import:workflow --separate --input=/workflows"]
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      n8n-import:
+        condition: service_completed_successfully
+    environment: *n8n-env
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    # Lets n8n reach a Convex backend running on your machine (npx convex dev).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  n8n_data:
