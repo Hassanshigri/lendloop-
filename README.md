@@ -74,7 +74,9 @@ npx convex dev            # creates a Convex project and writes NEXT_PUBLIC_CONV
 
 1. Create a Clerk application and copy its keys into `.env.local`:
    `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`.
-2. In the Clerk dashboard, enable the **Convex** integration (or create a JWT template named `convex`), and copy the Frontend API URL.
+2. In the Clerk dashboard, enable the **Convex** integration (or create a JWT template named `convex`), and copy the Frontend API URL. Under **JWT Templates → convex**, make sure the claims include
+   `{ "name": "{{user.full_name}}", "email": "{{user.primary_email_address}}" }`.
+   Admin access depends on the `email` claim: the server never trusts an email sent by the browser.
 3. Tell Convex about it:
 
 ```bash

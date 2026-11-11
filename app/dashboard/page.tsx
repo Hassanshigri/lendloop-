@@ -1,58 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import { UserButton } from "@clerk/nextjs";
+import { useAuth, useClerk, useUser, UserButton } from "@clerk/nextjs";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { CATEGORIES, type Category } from "@/convex/lib/constants";
+import { Button, Empty, Notice, Skeleton, StatusPill, Wordmark, formatDate, timeAgo } from "../ui";
 
 type Condition = "new" | "good" | "fair" | "worn";
 type Tab = "browse" | "listings" | "incoming" | "requests" | "admin";
 
 function errorMessage(err: unknown): string {
   if (err instanceof ConvexError) return String(err.data);
-  return "Something went wrong. Please try again.";
+  return "That didn't go through. Check your connection and try again.";
 }
 
-function timeAgo(ms: number): string {
-  const days = Math.floor((Date.now() - ms) / 86_400_000);
-  if (days <= 0) return "today";
-  if (days === 1) return "1 day ago";
-  return `${days} days ago`;
-}
-
-const STATUS_STYLE: Record<string, string> = {
-  pending: "bg-amber-100 text-amber-800",
-  approved: "bg-emerald-100 text-emerald-800",
-  declined: "bg-stone-200 text-stone-700",
-  returned: "bg-sky-100 text-sky-800",
-  cancelled: "bg-stone-200 text-stone-700",
-};
-
-function Badge({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${className}`}>{children}</span>;
-}
-
-function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "danger" }) {
-  const { variant = "primary", className = "", ...rest } = props;
-  const styles = {
-    primary: "bg-brand text-white hover:bg-brand-dark",
-    ghost: "border border-stone-300 bg-white hover:bg-stone-50",
-    danger: "border border-red-300 bg-white text-red-700 hover:bg-red-50",
-  }[variant];
-  return (
-    <button
-      {...rest}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${styles} ${className}`}
-    />
-  );
-}
-
-/** Runs a mutation and shows its error inline instead of throwing. */
-function useAction<A>(fn: (args: A) => Promise<unknown>) {
+/** Runs a mutation and keeps its error next to the control that triggered it. */
+function useRun<A>(fn: (args: A) => Promise<unknown>) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const run = async (args: A) => {
@@ -71,71 +37,131 @@ function useAction<A>(fn: (args: A) => Promise<unknown>) {
   return { run, error, busy };
 }
 
+const field =
+  "mt-1 w-full rounded-lg border border-line bg-tag px-3 py-2 text-ink placeholder:text-muted/70 focus:border-steel focus:outline-none";
+
 export default function Dashboard() {
-  const { isAuthenticated, isLoading } = useConvexAuth();
+  const clerk = useAuth();
+  const { user } = useUser();
+  const { signOut } = useClerk();
+  const convexAuth = useConvexAuth();
   const storeUser = useMutation(api.users.store);
   const [stored, setStored] = useState(false);
+  const [storeError, setStoreError] = useState<string | null>(null);
   const me = useQuery(api.users.me, stored ? {} : "skip");
+  const incoming = useQuery(api.loans.incoming, stored ? {} : "skip");
   const [tab, setTab] = useState<Tab>("browse");
 
-  useEffect(() => {
-    if (isAuthenticated && !stored) {
-      storeUser().then(() => setStored(true));
-    }
-  }, [isAuthenticated, stored, storeUser]);
+  const displayName =
+    user?.fullName || user?.firstName || user?.username || user?.primaryEmailAddress?.emailAddress?.split("@")[0];
 
-  if (isLoading || (isAuthenticated && !me)) {
-    return <p className="p-8 text-stone-500">Loading…</p>;
-  }
-  if (!isAuthenticated) {
+  useEffect(() => {
+    if (convexAuth.isAuthenticated && !stored && user !== undefined) {
+      storeUser({ displayName: displayName ?? undefined })
+        .then(() => setStored(true))
+        .catch((err) => setStoreError(errorMessage(err)));
+    }
+  }, [convexAuth.isAuthenticated, stored, storeUser, displayName, user]);
+
+  // Signed in with Clerk, but Convex never accepted the session token.
+  if (clerk.isLoaded && clerk.isSignedIn && !convexAuth.isLoading && !convexAuth.isAuthenticated) {
     return (
-      <p className="p-8">
-        Your session could not be verified. <Link href="/" className="underline">Go back</Link>.
-      </p>
+      <Shell>
+        <div className="mx-auto mt-10 max-w-lg rounded-xl bg-tag p-8 ring-1 ring-line">
+          <h1 className="text-2xl font-bold">Your sign-in didn&apos;t reach the board</h1>
+          <p className="mt-3 text-muted">
+            You&apos;re signed in, but the app couldn&apos;t confirm your session with its database. This usually
+            clears up after signing in again.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button onClick={() => signOut({ redirectUrl: "/" })}>Sign out and start again</Button>
+            <Button variant="plain" onClick={() => window.location.reload()}>
+              Try again
+            </Button>
+          </div>
+        </div>
+      </Shell>
     );
   }
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "browse", label: "All tools" },
-    { id: "listings", label: "My listings" },
-    { id: "incoming", label: "Incoming requests" },
-    { id: "requests", label: "My requests" },
-    ...(me?.role === "admin" ? [{ id: "admin" as Tab, label: "Admin" }] : []),
+  if (storeError) {
+    return (
+      <Shell>
+        <div className="mx-auto mt-10 max-w-lg">
+          <Notice>Your profile couldn&apos;t be saved: {storeError}</Notice>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (!clerk.isLoaded || convexAuth.isLoading || !me) {
+    return (
+      <Shell>
+        <div className="mt-8">
+          <Skeleton rows={3} />
+        </div>
+      </Shell>
+    );
+  }
+
+  const waiting = incoming?.filter((l) => l.status === "pending").length ?? 0;
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: "browse", label: "Borrow" },
+    { id: "listings", label: "My tools" },
+    { id: "incoming", label: "Requests for my tools", count: waiting },
+    { id: "requests", label: "Things I asked for" },
+    ...(me.role === "admin" ? [{ id: "admin" as Tab, label: "Admin" }] : []),
   ];
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-8">
-      <header className="mb-6 flex items-center justify-between">
-        <Link href="/" className="text-xl font-bold text-brand">LendLoop</Link>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-stone-600">
-            {me?.name}
-            {me?.role === "admin" && <Badge className="ml-2 bg-stone-800 text-white">admin</Badge>}
-          </span>
-          <UserButton />
-        </div>
-      </header>
-
-      <nav className="mb-6 flex flex-wrap gap-2" aria-label="Sections">
+    <Shell
+      who={
+        <span className="hidden text-muted sm:inline">
+          {me.name}
+          {me.role === "admin" && <span className="ml-2 rounded bg-ink px-1.5 py-0.5 text-xs text-tag">admin</span>}
+        </span>
+      }
+    >
+      <nav aria-label="Sections" className="mt-2 flex gap-1 overflow-x-auto border-b-2 border-ink">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             aria-current={tab === t.id ? "page" : undefined}
-            className={`rounded-full px-3 py-1.5 text-sm font-medium ${
-              tab === t.id ? "bg-brand text-white" : "bg-white text-stone-700 hover:bg-stone-100"
+            className={`-mb-0.5 shrink-0 rounded-t-lg px-4 py-2.5 font-bold ${
+              tab === t.id ? "bg-ink text-tag" : "text-muted hover:text-ink"
             }`}
           >
             {t.label}
+            {t.count ? (
+              <span className="ml-2 rounded-full bg-yellow px-2 text-sm text-ink">{t.count}</span>
+            ) : null}
           </button>
         ))}
       </nav>
 
-      {tab === "browse" && <Browse />}
-      {tab === "listings" && <MyListings />}
-      {tab === "incoming" && <LoanList kind="incoming" />}
-      {tab === "requests" && <LoanList kind="requests" />}
-      {tab === "admin" && me?.role === "admin" && <Admin />}
+      <div className="mt-8">
+        {tab === "browse" && <Browse />}
+        {tab === "listings" && <MyTools />}
+        {tab === "incoming" && <Loans kind="incoming" />}
+        {tab === "requests" && <Loans kind="requests" />}
+        {tab === "admin" && me.role === "admin" && <Admin />}
+      </div>
+    </Shell>
+  );
+}
+
+function Shell({ children, who }: { children: React.ReactNode; who?: React.ReactNode }) {
+  return (
+    <div className="mx-auto w-full max-w-5xl px-5 pb-20">
+      <header className="flex items-center justify-between py-6">
+        <Wordmark />
+        <div className="flex items-center gap-3">
+          {who}
+          <UserButton />
+        </div>
+      </header>
+      {children}
     </div>
   );
 }
@@ -145,40 +171,43 @@ function Browse() {
   const tools = useQuery(api.tools.listForMembers, category ? { category } : {});
   return (
     <section>
-      <label className="mb-4 flex items-center gap-2 text-sm">
-        Category
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value as Category | "")}
-          className="rounded-md border border-stone-300 bg-white px-2 py-1 capitalize"
-        >
-          <option value="">All</option>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-      </label>
+      <div className="mb-6 flex flex-wrap items-center gap-2" role="group" aria-label="Filter by category">
+        {(["", ...CATEGORIES] as const).map((c) => (
+          <button
+            key={c || "all"}
+            onClick={() => setCategory(c)}
+            aria-pressed={category === c}
+            className={`rounded-full px-3.5 py-1.5 text-[0.95rem] capitalize ${
+              category === c ? "bg-ink font-bold text-tag" : "bg-tag text-ink ring-1 ring-line hover:ring-ink/40"
+            }`}
+          >
+            {c || "Everything"}
+          </button>
+        ))}
+      </div>
       {tools === undefined ? (
-        <p className="text-stone-500">Loading…</p>
+        <Skeleton />
       ) : tools.length === 0 ? (
-        <p className="text-stone-500">No tools in this category yet.</p>
+        <Empty title={category ? `No ${category} on the board` : "The board is empty"}>
+          {category ? "Try another category." : "List something you own under My tools."}
+        </Empty>
       ) : (
-        <ul className="space-y-3">
+        <ul className="grid gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
           {tools.map((t) => (
-            <li key={t._id} className="rounded-lg border border-stone-200 bg-white p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-semibold">{t.name}</h3>
-                <Badge className="bg-stone-100 text-stone-600">{t.category}</Badge>
-                <Badge className={t.available ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
-                  {t.available ? "available" : "on loan"}
-                </Badge>
+            <li key={t._id} className="hang-tag flex flex-col">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="text-xl font-bold">{t.name}</h3>
+                {!t.available && <StatusPill status="approved" />}
               </div>
-              <p className="mt-1 text-sm text-stone-600">{t.description}</p>
-              <p className="mt-1 text-xs text-stone-500">
-                Condition: {t.condition} · Lent by {t.isMine ? "you" : t.ownerFirstName}
-                {t.ownerTrusted && <Badge className="ml-2 bg-sky-100 text-sky-800">trusted lender</Badge>}
+              <p className="mt-0.5 text-sm capitalize text-muted">
+                {t.category}, {t.condition} condition
               </p>
-              {!t.isMine && <RequestForm toolId={t._id} />}
+              <p className="mt-3 flex-1 text-[0.95rem]">{t.description}</p>
+              <p className="mt-3 text-sm text-muted">
+                {t.isMine ? "Yours" : `Lent by ${t.ownerFirstName}`}
+                {t.ownerTrusted && <span className="ml-2 font-bold text-steel">Trusted lender</span>}
+              </p>
+              {!t.isMine && <RequestForm toolId={t._id} toolName={t.name} />}
             </li>
           ))}
         </ul>
@@ -187,50 +216,61 @@ function Browse() {
   );
 }
 
-function RequestForm({ toolId }: { toolId: Id<"tools"> }) {
-  const request = useMutation(api.loans.request);
-  const { run, error, busy } = useAction(request);
+function RequestForm({ toolId, toolName }: { toolId: Id<"tools">; toolName: string }) {
+  const { run, error, busy } = useRun(useMutation(api.loans.request));
   const [open, setOpen] = useState(false);
   const [startDate, setStart] = useState("");
   const [endDate, setEnd] = useState("");
   const [sent, setSent] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
 
-  if (sent) return <p className="mt-3 text-sm text-emerald-700">Request sent. Track it under My requests.</p>;
+  if (sent) {
+    return (
+      <div className="mt-3">
+        <Notice tone="ok">Request sent. You&apos;ll see the answer under Things I asked for.</Notice>
+      </div>
+    );
+  }
   if (!open) {
     return (
-      <Button variant="ghost" className="mt-3" onClick={() => setOpen(true)}>
-        Request to borrow
+      <Button className="mt-4 w-full" onClick={() => setOpen(true)}>
+        Ask to borrow
       </Button>
     );
   }
   return (
     <form
-      className="mt-3 flex flex-wrap items-end gap-2"
+      className="mt-4 space-y-3 border-t border-line pt-3"
       onSubmit={async (e) => {
         e.preventDefault();
         if (await run({ toolId, startDate, endDate })) setSent(true);
       }}
     >
-      <label className="text-sm">
-        From
-        <input type="date" required min={today} value={startDate} onChange={(e) => setStart(e.target.value)}
-          className="ml-1 rounded-md border border-stone-300 px-2 py-1" />
-      </label>
-      <label className="text-sm">
-        To
-        <input type="date" required min={startDate || today} value={endDate} onChange={(e) => setEnd(e.target.value)}
-          className="ml-1 rounded-md border border-stone-300 px-2 py-1" />
-      </label>
-      <Button type="submit" disabled={busy}>Send request</Button>
-      <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-      {error && <p className="w-full text-sm text-red-700">{error}</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-sm font-bold">
+          Pick up
+          <input type="date" required min={today} value={startDate} onChange={(e) => setStart(e.target.value)} className={field} />
+        </label>
+        <label className="text-sm font-bold">
+          Return by
+          <input type="date" required min={startDate || today} value={endDate} onChange={(e) => setEnd(e.target.value)} className={field} />
+        </label>
+      </div>
+      {error && <Notice>{error}</Notice>}
+      <div className="flex gap-2">
+        <Button type="submit" disabled={busy} className="flex-1">
+          {busy ? "Sending…" : `Request ${toolName}`}
+        </Button>
+        <Button type="button" variant="plain" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
     </form>
   );
 }
 
 type ToolForm = { name: string; category: Category; condition: Condition; description: string };
-const EMPTY: ToolForm = { name: "", category: "power tools", condition: "good", description: "" };
+const EMPTY_TOOL: ToolForm = { name: "", category: "power tools", condition: "good", description: "" };
 
 function ToolEditor({
   initial,
@@ -244,72 +284,97 @@ function ToolEditor({
   submitLabel: string;
 }) {
   const [form, setForm] = useState(initial);
-  const field = "rounded-md border border-stone-300 px-2 py-1 w-full";
+  const [busy, setBusy] = useState(false);
   return (
     <form
-      className="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 sm:grid-cols-2"
+      className="space-y-3"
       onSubmit={async (e) => {
         e.preventDefault();
-        if ((await onSubmit(form)) && !onCancel) setForm(EMPTY);
+        setBusy(true);
+        const ok = await onSubmit(form);
+        setBusy(false);
+        if (ok && !onCancel) setForm(EMPTY_TOOL);
       }}
     >
-      <label className="text-sm">Name
-        <input required maxLength={80} className={field} value={form.name}
+      <label className="block text-sm font-bold">
+        What is it?
+        <input required maxLength={80} placeholder="Cordless drill" className={field} value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })} />
       </label>
-      <label className="text-sm">Category
-        <select className={`${field} capitalize`} value={form.category}
-          onChange={(e) => setForm({ ...form, category: e.target.value as Category })}>
-          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-      </label>
-      <label className="text-sm">Condition
-        <select className={`${field} capitalize`} value={form.condition}
-          onChange={(e) => setForm({ ...form, condition: e.target.value as Condition })}>
-          {(["new", "good", "fair", "worn"] as const).map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-      </label>
-      <label className="text-sm sm:col-span-2">Short description
-        <textarea required maxLength={500} rows={2} className={field} value={form.description}
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block text-sm font-bold">
+          Category
+          <select className={`${field} capitalize`} value={form.category}
+            onChange={(e) => setForm({ ...form, category: e.target.value as Category })}>
+            {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label className="block text-sm font-bold">
+          Condition
+          <select className={`${field} capitalize`} value={form.condition}
+            onChange={(e) => setForm({ ...form, condition: e.target.value as Condition })}>
+            {(["new", "good", "fair", "worn"] as const).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+      </div>
+      <label className="block text-sm font-bold">
+        Anything a borrower should know?
+        <textarea required maxLength={500} rows={3} placeholder="Comes with two batteries and a charger."
+          className={field} value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })} />
       </label>
-      <div className="flex gap-2 sm:col-span-2">
-        <Button type="submit">{submitLabel}</Button>
-        {onCancel && <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>}
+      <div className="flex gap-2">
+        <Button type="submit" disabled={busy}>{busy ? "Saving…" : submitLabel}</Button>
+        {onCancel && <Button type="button" variant="plain" onClick={onCancel}>Cancel</Button>}
       </div>
     </form>
   );
 }
 
-function MyListings() {
+function MyTools() {
   const tools = useQuery(api.tools.myListings);
-  const create = useAction(useMutation(api.tools.create));
-  const update = useAction(useMutation(api.tools.update));
-  const remove = useAction(useMutation(api.tools.remove));
+  const create = useRun(useMutation(api.tools.create));
+  const update = useRun(useMutation(api.tools.update));
+  const remove = useRun(useMutation(api.tools.remove));
   const [editing, setEditing] = useState<Id<"tools"> | null>(null);
+  const [added, setAdded] = useState(false);
 
   return (
-    <section className="space-y-6">
-      <div>
-        <h2 className="mb-2 font-semibold">List a tool</h2>
-        <ToolEditor initial={EMPTY} submitLabel="Add listing" onSubmit={(f) => create.run(f)} />
-        {create.error && <p className="mt-2 text-sm text-red-700">{create.error}</p>}
+    <section className="grid gap-8 lg:grid-cols-[22rem_1fr]">
+      <div className="h-fit rounded-xl bg-tag p-5 ring-1 ring-line lg:sticky lg:top-6">
+        <h2 className="mb-4 text-xl font-bold">Lend something</h2>
+        <ToolEditor
+          initial={EMPTY_TOOL}
+          submitLabel="Put it on the board"
+          onSubmit={async (f) => {
+            const ok = await create.run(f);
+            setAdded(ok);
+            return ok;
+          }}
+        />
+        <div className="mt-3">
+          {create.error && <Notice>{create.error}</Notice>}
+          {added && !create.error && <Notice tone="ok">It&apos;s on the board.</Notice>}
+        </div>
       </div>
+
       <div>
-        <h2 className="mb-2 font-semibold">Your listings</h2>
-        {(update.error || remove.error) && <p className="mb-2 text-sm text-red-700">{update.error ?? remove.error}</p>}
+        <h2 className="mb-4 text-xl font-bold">Your tools</h2>
+        {(update.error || remove.error) && (
+          <div className="mb-3"><Notice>{update.error ?? remove.error}</Notice></div>
+        )}
         {tools === undefined ? (
-          <p className="text-stone-500">Loading…</p>
+          <Skeleton rows={2} />
         ) : tools.length === 0 ? (
-          <p className="text-stone-500">You have not listed anything yet.</p>
+          <Empty title="You haven't lent anything yet">Add your first tool with the form.</Empty>
         ) : (
-          <ul className="space-y-3">
-            {tools.map((t) =>
-              editing === t._id ? (
-                <li key={t._id}>
+          <ul className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+            {tools.map((t) => (
+              <li key={t._id} className="hang-tag">
+                {editing === t._id ? (
                   <ToolEditor
                     initial={{ name: t.name, category: t.category, condition: t.condition, description: t.description }}
-                    submitLabel="Save"
+                    submitLabel="Save changes"
                     onCancel={() => setEditing(null)}
                     onSubmit={async (f) => {
                       const ok = await update.run({ toolId: t._id, ...f });
@@ -317,31 +382,30 @@ function MyListings() {
                       return ok;
                     }}
                   />
-                </li>
-              ) : (
-                <li key={t._id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-white p-4">
-                  <div>
-                    <span className="font-semibold">{t.name}</span>{" "}
-                    <Badge className="bg-stone-100 text-stone-600">{t.category}</Badge>{" "}
-                    <Badge className={t.available ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
-                      {t.available ? "available" : "on loan"}
-                    </Badge>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="ghost" onClick={() => setEditing(t._id)}>Edit</Button>
-                    <Button
-                      variant="danger"
-                      disabled={remove.busy}
-                      onClick={() => {
-                        if (window.confirm(`Delete "${t.name}"?`)) remove.run({ toolId: t._id });
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </li>
-              ),
-            )}
+                ) : (
+                  <>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-xl font-bold">{t.name}</h3>
+                      {!t.available && <StatusPill status="approved" />}
+                    </div>
+                    <p className="mt-0.5 text-sm capitalize text-muted">{t.category}, {t.condition} condition</p>
+                    <p className="mt-3 text-[0.95rem]">{t.description}</p>
+                    <div className="mt-4 flex gap-2">
+                      <Button variant="plain" onClick={() => setEditing(t._id)}>Edit</Button>
+                      <Button
+                        variant="danger"
+                        disabled={remove.busy}
+                        onClick={() => {
+                          if (window.confirm(`Take "${t.name}" off the board?`)) remove.run({ toolId: t._id });
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </li>
+            ))}
           </ul>
         )}
       </div>
@@ -364,58 +428,64 @@ type LoanView = {
 function Activity({ items }: { items: LoanView["activity"] }) {
   if (items.length === 0) return null;
   const e = items[0];
-  const label = e.kind === "overdue_reminder" ? "Reminder" : "Notification";
+  const what = e.kind === "overdue_reminder" ? "Reminder" : "Notification";
   return (
-    <p className="mt-1 text-xs text-stone-500">
-      {label} {e.status === "sent" ? "sent" : "failed"} {timeAgo(e.at)}
+    <p className="mt-1 text-sm text-muted">
+      {what} {e.status === "sent" ? "sent" : "failed"} {timeAgo(e.at)}
     </p>
   );
 }
 
-function LoanList({ kind }: { kind: "incoming" | "requests" }) {
+function Loans({ kind }: { kind: "incoming" | "requests" }) {
   const loans = useQuery(kind === "incoming" ? api.loans.incoming : api.loans.myRequests);
-  const approve = useAction(useMutation(api.loans.approve));
-  const decline = useAction(useMutation(api.loans.decline));
-  const returned = useAction(useMutation(api.loans.markReturned));
-  const cancel = useAction(useMutation(api.loans.cancel));
+  const approve = useRun(useMutation(api.loans.approve));
+  const decline = useRun(useMutation(api.loans.decline));
+  const returned = useRun(useMutation(api.loans.markReturned));
+  const cancel = useRun(useMutation(api.loans.cancel));
   const error = approve.error ?? decline.error ?? returned.error ?? cancel.error;
+  const busy = approve.busy || decline.busy || returned.busy || cancel.busy;
 
-  if (loans === undefined) return <p className="text-stone-500">Loading…</p>;
+  if (loans === undefined) return <Skeleton rows={2} />;
   if (loans.length === 0) {
-    return (
-      <p className="text-stone-500">
-        {kind === "incoming" ? "No one has asked to borrow your tools yet." : "You have not requested anything yet."}
-      </p>
+    return kind === "incoming" ? (
+      <Empty title="No one has asked yet">Requests to borrow your tools will show up here.</Empty>
+    ) : (
+      <Empty title="You haven't asked for anything">Find something under Borrow.</Empty>
     );
   }
   return (
     <section>
-      {error && <p className="mb-2 text-sm text-red-700">{error}</p>}
-      <ul className="space-y-3">
+      {error && <div className="mb-4"><Notice>{error}</Notice></div>}
+      <ul className="divide-y divide-line overflow-hidden rounded-xl bg-tag ring-1 ring-line">
         {loans.map((l: LoanView) => (
-          <li key={l._id} className="rounded-lg border border-stone-200 bg-white p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">{l.toolName}</span>
-              <Badge className={STATUS_STYLE[l.status]}>{l.status}</Badge>
-              {l.overdue && <Badge className="bg-red-100 text-red-800">overdue</Badge>}
+          <li key={l._id} className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-display text-lg font-bold">{l.toolName}</span>
+                <StatusPill status={l.status} overdue={l.overdue} />
+              </div>
+              <p className="mt-0.5 text-muted">
+                {kind === "incoming" ? `${l.borrowerFirstName} wants it` : `${l.lenderFirstName}'s`}{" "}
+                from {formatDate(l.startDate)} to {formatDate(l.endDate)}
+              </p>
+              <Activity items={l.activity} />
             </div>
-            <p className="mt-1 text-sm text-stone-600">
-              {kind === "incoming" ? `${l.borrowerFirstName} wants it` : `From ${l.lenderFirstName}`} ·{" "}
-              {l.startDate} to {l.endDate}
-            </p>
-            <Activity items={l.activity} />
-            <div className="mt-3 flex gap-2">
+            <div className="flex gap-2">
               {kind === "incoming" && l.status === "pending" && (
                 <>
-                  <Button onClick={() => approve.run({ loanId: l._id })}>Approve</Button>
-                  <Button variant="ghost" onClick={() => decline.run({ loanId: l._id })}>Decline</Button>
+                  <Button disabled={busy} onClick={() => approve.run({ loanId: l._id })}>Approve</Button>
+                  <Button variant="plain" disabled={busy} onClick={() => decline.run({ loanId: l._id })}>Decline</Button>
                 </>
               )}
               {kind === "incoming" && l.status === "approved" && (
-                <Button variant="ghost" onClick={() => returned.run({ loanId: l._id })}>Mark returned</Button>
+                <Button variant="plain" disabled={busy} onClick={() => returned.run({ loanId: l._id })}>
+                  Mark returned
+                </Button>
               )}
               {kind === "requests" && l.status === "pending" && (
-                <Button variant="ghost" onClick={() => cancel.run({ loanId: l._id })}>Cancel request</Button>
+                <Button variant="plain" disabled={busy} onClick={() => cancel.run({ loanId: l._id })}>
+                  Cancel request
+                </Button>
               )}
             </div>
           </li>
@@ -429,68 +499,83 @@ function Admin() {
   const loans = useQuery(api.loans.allForAdmin);
   const users = useQuery(api.users.listForAdmin);
   const tools = useQuery(api.tools.listForMembers, {});
-  const setTrusted = useAction(useMutation(api.users.setTrustedLender));
-  const remove = useAction(useMutation(api.tools.remove));
+  const setTrusted = useRun(useMutation(api.users.setTrustedLender));
+  const remove = useRun(useMutation(api.tools.remove));
 
   return (
-    <section className="space-y-8">
+    <section className="space-y-10">
       <div>
-        <h2 className="mb-2 font-semibold">All loans</h2>
-        {loans === undefined ? <p className="text-stone-500">Loading…</p> : loans.length === 0 ? (
-          <p className="text-stone-500">No loans yet.</p>
+        <h2 className="mb-3 text-xl font-bold">Every loan</h2>
+        {loans === undefined ? <Skeleton rows={1} /> : loans.length === 0 ? (
+          <Empty title="No loans yet" />
         ) : (
-          <table className="w-full overflow-hidden rounded-lg border border-stone-200 bg-white text-sm">
-            <thead className="bg-stone-100 text-left">
-              <tr><th className="p-2">Tool</th><th className="p-2">Lender</th><th className="p-2">Borrower</th><th className="p-2">Dates</th><th className="p-2">Status</th></tr>
-            </thead>
-            <tbody>
-              {loans.map((l) => (
-                <tr key={l._id} className="border-t border-stone-200">
-                  <td className="p-2">{l.toolName}</td>
-                  <td className="p-2">{l.lenderFirstName}</td>
-                  <td className="p-2">{l.borrowerFirstName}</td>
-                  <td className="p-2">{l.startDate} to {l.endDate}</td>
-                  <td className="p-2"><Badge className={STATUS_STYLE[l.status]}>{l.status}</Badge>{l.overdue && " overdue"}</td>
+          <div className="overflow-x-auto rounded-xl bg-tag ring-1 ring-line">
+            <table className="w-full text-left text-[0.95rem]">
+              <thead className="border-b border-line text-muted">
+                <tr>
+                  <th className="px-4 py-2.5 font-bold">Tool</th>
+                  <th className="px-4 py-2.5 font-bold">Lender</th>
+                  <th className="px-4 py-2.5 font-bold">Borrower</th>
+                  <th className="px-4 py-2.5 font-bold">Dates</th>
+                  <th className="px-4 py-2.5 font-bold">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {loans.map((l) => (
+                  <tr key={l._id}>
+                    <td className="px-4 py-2.5 font-bold">{l.toolName}</td>
+                    <td className="px-4 py-2.5">{l.lenderFirstName}</td>
+                    <td className="px-4 py-2.5">{l.borrowerFirstName}</td>
+                    <td className="px-4 py-2.5">{formatDate(l.startDate)} to {formatDate(l.endDate)}</td>
+                    <td className="px-4 py-2.5"><StatusPill status={l.status} overdue={l.overdue} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
-      <div>
-        <h2 className="mb-2 font-semibold">Members</h2>
-        {setTrusted.error && <p className="mb-2 text-sm text-red-700">{setTrusted.error}</p>}
-        <ul className="space-y-2">
-          {users?.map((u) => (
-            <li key={u._id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-white px-4 py-2">
-              <span>{u.name} {u.role === "admin" && <Badge className="bg-stone-800 text-white">admin</Badge>}</span>
-              <Button variant="ghost" onClick={() => setTrusted.run({ userId: u._id, trusted: !u.trustedLender })}>
-                {u.trustedLender ? "Remove Trusted Lender" : "Mark Trusted Lender"}
-              </Button>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div>
-        <h2 className="mb-2 font-semibold">Moderate listings</h2>
-        {remove.error && <p className="mb-2 text-sm text-red-700">{remove.error}</p>}
-        <ul className="space-y-2">
-          {tools?.map((t) => (
-            <li key={t._id} className="flex items-center justify-between rounded-lg border border-stone-200 bg-white px-4 py-2">
-              <span>{t.name} <span className="text-xs text-stone-500">by {t.isMine ? "you" : t.ownerFirstName}</span></span>
-              <Button
-                variant="danger"
-                onClick={() => {
-                  if (window.confirm(`Remove "${t.name}" for all users?`)) remove.run({ toolId: t._id });
-                }}
-              >
-                Remove
-              </Button>
-            </li>
-          ))}
-        </ul>
+      <div className="grid gap-10 lg:grid-cols-2">
+        <div>
+          <h2 className="mb-3 text-xl font-bold">Neighbors</h2>
+          {setTrusted.error && <div className="mb-3"><Notice>{setTrusted.error}</Notice></div>}
+          <ul className="divide-y divide-line rounded-xl bg-tag ring-1 ring-line">
+            {users?.map((u) => (
+              <li key={u._id} className="flex items-center justify-between gap-3 px-4 py-3">
+                <span>
+                  {u.name}
+                  {u.trustedLender && <span className="ml-2 text-sm font-bold text-steel">Trusted lender</span>}
+                </span>
+                <Button variant="quiet" onClick={() => setTrusted.run({ userId: u._id, trusted: !u.trustedLender })}>
+                  {u.trustedLender ? "Remove trusted" : "Mark trusted"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h2 className="mb-3 text-xl font-bold">Listings</h2>
+          {remove.error && <div className="mb-3"><Notice>{remove.error}</Notice></div>}
+          <ul className="divide-y divide-line rounded-xl bg-tag ring-1 ring-line">
+            {tools?.map((t) => (
+              <li key={t._id} className="flex items-center justify-between gap-3 px-4 py-3">
+                <span>
+                  {t.name} <span className="text-sm text-muted">by {t.isMine ? "you" : t.ownerFirstName}</span>
+                </span>
+                <Button
+                  variant="quiet"
+                  className="text-bad"
+                  onClick={() => {
+                    if (window.confirm(`Remove "${t.name}" for everyone?`)) remove.run({ toolId: t._id });
+                  }}
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     </section>
   );

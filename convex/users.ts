@@ -13,11 +13,15 @@ function isAdminEmail(email: string | undefined): boolean {
 
 /** Called after sign-in. Creates or refreshes the user record from the Clerk identity. */
 export const store = mutation({
-  args: {},
-  handler: async (ctx) => {
+  // displayName comes from the browser and is only a fallback for display when
+  // the token carries no name. Role decisions never use client-supplied data.
+  args: { displayName: v.optional(v.string()) },
+  handler: async (ctx, { displayName }) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Not signed in.");
-    const name = identity.name ?? identity.givenName ?? identity.email?.split("@")[0] ?? "Neighbor";
+    const fallback = displayName?.replace(/\s+/g, " ").trim().slice(0, 60);
+    const name =
+      identity.name ?? identity.givenName ?? (fallback || undefined) ?? identity.email?.split("@")[0] ?? "Neighbor";
     const role = isAdminEmail(identity.email) ? "admin" : "user";
     const existing = await ctx.db
       .query("users")
