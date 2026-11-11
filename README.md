@@ -148,7 +148,7 @@ Optional demo data, including one overdue loan: `npx convex run seed:demo`
 - Each notification payload holds just what one message needs: event, tool name, dates, the recipient's first name and email, and the other person's first name. No Clerk IDs, descriptions or full names.
 - The overdue endpoint returns only loan ID, idempotency key, tool name, due date, days overdue, and the borrower's first name and email.
 - Mock notification logs mask email addresses (`b***@example.com`).
-- Loan activity shown in the app ("Reminder sent 2 days ago") stores kind, status and time only.
+- Loan activity shown in the app ("Reminder sent 2 days ago") stores kind, status and time only...
 
 ---
 
