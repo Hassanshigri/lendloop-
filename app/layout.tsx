@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Atkinson_Hyperlegible, Bricolage_Grotesque } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ConvexClientProvider } from "./ConvexClientProvider";
-import "./globals.css";
+import "./lendloop.css";
 
 const bricolage = Bricolage_Grotesque({ variable: "--font-bricolage", subsets: ["latin"] });
 const atkinson = Atkinson_Hyperlegible({
