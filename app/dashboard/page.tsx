@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth, useClerk, useUser, UserButton } from "@clerk/nextjs";
-import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useConvexAuth, useConvexConnectionState, useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -51,6 +51,13 @@ export default function Dashboard() {
   const me = useQuery(api.users.me, stored ? {} : "skip");
   const incoming = useQuery(api.loans.incoming, stored ? {} : "skip");
   const [tab, setTab] = useState<Tab>("browse");
+  const connection = useConvexConnectionState();
+  const [graceOver, setGraceOver] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setGraceOver(true), 7000);
+    return () => clearTimeout(timer);
+  }, []);
+  const unreachable = graceOver && !connection.hasEverConnected && !connection.isWebSocketConnected;
 
   const displayName =
     user?.fullName || user?.firstName || user?.username || user?.primaryEmailAddress?.emailAddress?.split("@")[0];
@@ -62,6 +69,30 @@ export default function Dashboard() {
         .catch((err) => setStoreError(errorMessage(err)));
     }
   }, [convexAuth.isAuthenticated, stored, storeUser, displayName, user]);
+
+  // The browser can't open a connection to Convex at all (firewall, antivirus,
+  // VPN, extension or ISP). Say so plainly instead of blaming the sign-in.
+  if (unreachable) {
+    return (
+      <Shell>
+        <div className="mx-auto mt-10 max-w-lg rounded-xl bg-tag p-8 ring-1 ring-line">
+          <h1 className="text-2xl font-bold">Can&apos;t reach the LendLoop server</h1>
+          <p className="mt-3 text-muted">
+            Your browser couldn&apos;t open a connection to the app&apos;s database. Something on this network or
+            device is blocking it, often a VPN, an antivirus web shield, or a browser extension.
+          </p>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-muted">
+            <li>Try a private window, which turns most extensions off.</li>
+            <li>Turn a VPN or antivirus web protection off for a minute.</li>
+            <li>Try another network, such as mobile data.</li>
+          </ul>
+          <div className="mt-6">
+            <Button onClick={() => window.location.reload()}>Try again</Button>
+          </div>
+        </div>
+      </Shell>
+    );
+  }
 
   // Signed in with Clerk, but Convex never accepted the session token.
   if (clerk.isLoaded && clerk.isSignedIn && !convexAuth.isLoading && !convexAuth.isAuthenticated) {
@@ -152,8 +183,15 @@ export default function Dashboard() {
 }
 
 function Shell({ children, who }: { children: React.ReactNode; who?: React.ReactNode }) {
+  const connection = useConvexConnectionState();
+  const reconnecting = connection.hasEverConnected && !connection.isWebSocketConnected;
   return (
     <div className="mx-auto w-full max-w-5xl px-5 pb-20">
+      {reconnecting && (
+        <p role="status" className="mt-3 rounded-lg bg-yellow/30 px-3 py-2 text-center text-[0.95rem] text-warn">
+          Connection lost. Reconnecting, and your changes will sync when it&apos;s back.
+        </p>
+      )}
       <header className="flex items-center justify-between py-6">
         <Wordmark />
         <div className="flex items-center gap-3">
